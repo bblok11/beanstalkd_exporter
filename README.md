@@ -21,4 +21,4 @@ Prometheus exporter for Beanstalkd server metrics.
 
 ## Collectors
 
-The exporter collects both global and per tube stats. See the [Beanstalkd protocol documentation](https://github.com/kr/beanstalkd/blob/master/doc/protocol.md) ('stats' and 'stats-tube' commands) for all fields.
+The exporter collects both global and per tube stats. See the [Beanstalkd protocol documentation](https://github.com/kr/beanstalkd/blob/master/doc/protocol.txt) ('stats' and 'stats-tube' commands) for all fields.
