@@ -1,3 +1,6 @@
+var _ = require('underscore');
+var async = require('async');
+
 var Prometheus = require("prometheus-client");
 var fivebeans = require('fivebeans');
 var argv = require('yargs')
@@ -5,6 +8,7 @@ var argv = require('yargs')
     .example('$0 127.0.0.1:11300 192.168.2.100 -p 9010', 'Listen to Beanstalkd at 127.0.0.1, port 9010')
     .alias('p', 'port')
     .alias('i', 'interval')
+    .alias('h', 'help')
     .default('p', 9011)
     .default('i', 10)
     .describe('p', 'Server port')
@@ -32,33 +36,64 @@ servers.forEach(function(server){
 
 var prometheus = new Prometheus();
 
-var up = prometheus.newGauge({
+var globalKeys = ['current-jobs-urgent', 'current-jobs-ready', 'current-jobs-reserved', 'current-jobs-delayed', 'current-jobs-buried', 'cmd-put',
+    'cmd-peek', 'cmd-peek-ready', 'cmd-peek-delayed', 'cmd-peek-buried', 'cmd-reserve', 'cmd-reserve-with-timeout', 'cmd-delete', 'cmd-release',
+    'cmd-use', 'cmd-watch', 'cmd-ignore', 'cmd-bury', 'cmd-kick', 'cmd-touch', 'cmd-stats', 'cmd-stats-job', 'cmd-stats-tube', 'cmd-list-tubes',
+    'cmd-list-tube-used', 'cmd-list-tubes-watched', 'cmd-pause-tube', 'job-timeouts', 'total-jobs', 'max-job-size', 'current-tubes', 'current-connections',
+    'current-producers', 'current-workers', 'current-waiting', 'total-connections', 'uptime'];
+
+var tubeKeys = ['current-jobs-urgent', 'current-jobs-ready', 'current-jobs-reserved', 'current-jobs-delayed', 'current-jobs-buried',
+    'total-jobs', 'current-using', 'current-watching', 'current-waiting', 'cmd-delete', 'cmd-pause-tube', 'pause', 'pause-time-left'];
+
+// Create stats gauges
+var gauges = {};
+
+var up = gauges['up'] = prometheus.newGauge({
     namespace: "beanstalkd",
     name: "up",
     help: "Server is up"
 });
 
-var global_jobs_ready = prometheus.newGauge({
+var stats_error = gauges['stats_error'] = prometheus.newGauge({
     namespace: "beanstalkd",
-    name: "global_jobs_ready",
-    help: "STATS current-jobs-ready"
+    name: "stats_error",
+    help: "Error during stats"
+});
+
+_.each(globalKeys, function(key){
+
+    var name = 'global_' + parseKey(key);
+
+    gauges[name] = prometheus.newGauge({
+        namespace: "beanstalkd",
+        name: name,
+        help: "STATS " + key
+    });
+});
+
+_.each(tubeKeys, function(key){
+
+    var name = 'tube_' + parseKey(key);
+
+    gauges[name] = prometheus.newGauge({
+        namespace: "beanstalkd",
+        name: name,
+        help: "STATS TUBE " + key
+    });
 });
 
 prometheus.listen(serverPort);
 console.log('Server listening at port ' + serverPort + '...');
 
-function connect() {
-
-
-}
 
 function update() {
 
     console.log('Updating');
 
-    serverConfigs.forEach(function (server) {
+    _.each(serverConfigs, function (server) {
 
         var serverId = server.host + ':' + server.port;
+        var serverIdObj = { server: serverId };
 
         var beanstalk = new fivebeans.client(server.host, server.port);
         beanstalk
@@ -67,23 +102,113 @@ function update() {
                 console.log('Server ' + serverId + ' up');
 
                 // Set up
-                up.set({
-                    server: serverId
-                }, 1);
+                up.set(serverIdObj, 1);
+                stats_error.set(serverIdObj, 0);
+
+                var statsFunctions = [];
+
+                beanstalk.list_tubes(function(tubesError, tubes){
+
+                    if(tubesError){
+
+                        console.error(tubesError);
+
+                        stats_error.set(serverIdObj, 1);
+                        beanstalk.end();
+                        beanstalk = null;
+
+                        return;
+                    }
+
+                    // Get global stats
+                    statsFunctions.push(function(callback){
+
+                        beanstalk.stats(function(statsError, stats){
+
+                            if(statsError){
+
+                                callback(statsError);
+                                return;
+                            }
+
+                            _.each(stats, function(statsValue, statsName){
+
+                                var gague = gauges['global_' + parseKey(statsName)];
+                                if(gague){
+                                    gague.set(serverIdObj, statsValue);
+                                }
+                            });
+
+                            callback();
+                        });
+                    });
+
+                    // Get tube stats
+                    _.each(tubes, function(tube){
+
+                        statsFunctions.push(function(callback){
+
+                            var tubeIdObj = { server: serverId, tube: tube };
+
+                            beanstalk.stats_tube(tube, function(statsTubeError, statsTube){
+
+                                if(statsTubeError){
+
+                                    callback(statsTubeError);
+                                    return;
+                                }
+
+                                _.each(statsTube, function(statsValue, statsName){
+
+                                    var gague = gauges['tube_' + parseKey(statsName)];
+                                    if(gague){
+                                        gague.set(tubeIdObj, statsValue);
+                                    }
+                                });
+
+                                callback();
+                            });
+                        });
+                    });
+
+                    // START
+                    console.log('Getting stats for ' + serverId + '...');
+
+                    async.series(statsFunctions, function(statsError){
+
+                        if(statsError){
+
+                            console.error(statsError);
+                            stats_error.set(serverIdObj, 1);
+                        }
+
+                        beanstalk.end();
+                        beanstalk = null;
+
+                        console.log('Stats for ' + serverId + ' done');
+                    });
+                });
             })
             .on('error', function (err) {
 
                 // Set down
+                console.log(err);
                 console.log('Server ' + serverId + ' down');
 
-                up.set({
-                    server: serverId
-                }, 0);
+                up.set(serverIdObj, 0);
+
+                beanstalk.end();
+                beanstalk = null;
             })
             .connect();
     });
 }
 
-update();
+function parseKey(key)
+{
+    return key.replace(/\-/g, '_');
+}
 
+// START
+update();
 setInterval(update, updateInterval * 1000);
