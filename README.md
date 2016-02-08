@@ -12,14 +12,12 @@ Prometheus exporter for Beanstalkd server metrics.
     Usage: beanstalkd_exporter <servers> [options]
     
     Options:
-      -p, --port      Server port                                    [default: 9011]
-      -i, --interval  Update interval (seconds)                        [default: 10]
-      -h, --help      Show help                                            [boolean]
+      -p, --port  Server port                                        [default: 9011]
+      -h, --help  Show help                                                [boolean]
     
     Examples:
       beanstalkd_exporter 127.0.0.1:11300       Listen to Beanstalkd at 127.0.0.1,
       192.168.2.100 -p 9010                     port 9010
-
 
 ## Collectors
 

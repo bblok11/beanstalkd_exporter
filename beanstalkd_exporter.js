@@ -3,23 +3,20 @@ var async = require('async');
 
 var Prometheus = require("prometheus-client");
 var fivebeans = require('fivebeans');
+var express = require('express');
 var argv = require('yargs')
     .usage('Usage: $0 <servers> [options]')
     .example('$0 127.0.0.1:11300 192.168.2.100 -p 9010', 'Listen to Beanstalkd at 127.0.0.1, port 9010')
     .alias('p', 'port')
-    .alias('i', 'interval')
     .alias('h', 'help')
     .default('p', 9011)
-    .default('i', 10)
     .describe('p', 'Server port')
-    .describe('i', 'Update interval (seconds)')
     .demand(1)
     .help('h')
     .argv;
 
 var servers = argv._;
 var serverPort = argv.p;
-var updateInterval = parseInt(argv.i);
 
 // Prepare server configs
 var serverConfigs = [];
@@ -82,13 +79,9 @@ _.each(tubeKeys, function(key){
     });
 });
 
-prometheus.listen(serverPort);
-console.log('Server listening at port ' + serverPort + '...');
+function update(req, res, updateCallback) {
 
-
-function update() {
-
-    console.log('Updating');
+    console.log('Getting stats...');
 
     _.each(serverConfigs, function (server) {
 
@@ -116,6 +109,8 @@ function update() {
                         stats_error.set(serverIdObj, 1);
                         beanstalk.end();
                         beanstalk = null;
+
+                        updateCallback();
 
                         return;
                     }
@@ -186,6 +181,8 @@ function update() {
                         beanstalk = null;
 
                         console.log('Stats for ' + serverId + ' done');
+
+                        updateCallback();
                     });
                 });
             })
@@ -199,6 +196,8 @@ function update() {
 
                 beanstalk.end();
                 beanstalk = null;
+
+                updateCallback();
             })
             .connect();
     });
@@ -210,5 +209,12 @@ function parseKey(key)
 }
 
 // START
-update();
-setInterval(update, updateInterval * 1000);
+var app = express();
+app.get("/metrics", update, prometheus.metricsFunc());
+
+app.listen(serverPort, function() {
+    console.log('Server listening at port ' + serverPort + '...');
+});
+app.on("error", function(err) {
+    return console.error("Metric server error: " + err);
+});
